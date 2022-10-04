@@ -16,6 +16,8 @@
             [ring.middleware.reload :refer [wrap-reload]]
             [ring.middleware.params :refer [wrap-params]]
             [ring.middleware.cookies :refer [cookies-response cookies-request]]
+            [ring.middleware.anti-forgery :as af]
+            [ring.util.anti-forgery :as afu]
             [cheshire.core :as json]
             [clojure.java.io :as io :refer [input-stream]]
             [hickory.zip :as hickory]
@@ -76,7 +78,7 @@
 (defn firebase-sign-in [email password]
   (try
     (let [response (-> (http/post "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-                                  {:query-params {:key "key"}
+                                  {:query-params {:key "AIzaSyAl_tcBrJC8o0oLnzXoiR4-5R1BBvgSuKU"}
                                    :form-params {:email email
                                                  :password password
                                                  :returnSecureToken true}})
@@ -107,7 +109,7 @@
            [:h1 "Home"]
            [:p "Welcome to the home page."]
            [:form {:action "/check-strength" :method "post"}
-            [:input {:type "hidden" :name "csrf-token"}]
+            (afu/anti-forgery-field)
             [:input {:type "text" :name "password"}]
             [:input {:type "submit" :value "Check Password Strength"}]]
            [:a {:href "/logout"} "Logout"]])))
@@ -193,9 +195,9 @@
   [["/" {:get login-page}]
    ["/login" {:post login-handler}]
    ["/home" {:get {:handler home-page
-                   :middleware [csrf-token-adder]}}]
+                   :middleware [af/wrap-anti-forgery]}}]
    ["/check-strength" {:post {:handler check-strength
-                              :middleware [anti-forgery]}}]])
+                              :middleware [af/wrap-anti-forgery]}}]])
 
 
 (defn wrap-formats [handler]
