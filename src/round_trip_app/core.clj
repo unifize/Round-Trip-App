@@ -17,6 +17,7 @@
             [ring.middleware.params :refer [wrap-params]]
             [ring.middleware.cookies :refer [cookies-response cookies-request]]
             [ring.middleware.anti-forgery :as af]
+            [round-trip-app.csrf :refer [double-submit-cookie-strategy read-tok generate-csrf-token]]
             [ring.util.anti-forgery :as afu]
             [cheshire.core :as json]
             [clojure.java.io :as io :refer [input-stream]]
@@ -78,7 +79,7 @@
 (defn firebase-sign-in [email password]
   (try
     (let [response (-> (http/post "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-                                  {:query-params {:key "AIzaSyAl_tcBrJC8o0oLnzXoiR4-5R1BBvgSuKU"}
+                                  {:query-params {:key "<API_KEY>"}
                                    :form-params {:email email
                                                  :password password
                                                  :returnSecureToken true}})
@@ -108,8 +109,8 @@
           [:body
            [:h1 "Home"]
            [:p "Welcome to the home page."]
-           [:form {:action "/check-strength" :method "post"}
-            (afu/anti-forgery-field)
+           [:form {:action "/check-strength" :method "post"} 
+            [:input {:type "hidden" :name "csrf-token" :value (generate-csrf-token)}]
             [:input {:type "text" :name "password"}]
             [:input {:type "submit" :value "Check Password Strength"}]]
            [:a {:href "/logout"} "Logout"]])))
@@ -165,7 +166,7 @@
     (let [cookied-request (cookies-request request)
           session-cookie (get-in cookied-request [:cookies "session-cookie" :value])
           csrf-token (get-in request [:form-params "csrf-token"])]
-      (if (or (nil? session-cookie) 
+      (if (or (nil? session-cookie)
               (not= csrf-token "xyz") ;; replace by making the database call to get and verify the csrf token
               (not (verify-cookie session-cookie)))
         (redirect "/")
@@ -195,9 +196,11 @@
   [["/" {:get login-page}]
    ["/login" {:post login-handler}]
    ["/home" {:get {:handler home-page
-                   :middleware [af/wrap-anti-forgery]}}]
+                   :middleware [af/wrap-anti-forgery {:strategy (double-submit-cookie-strategy)
+                                                      :read-token read-tok}]}}]
    ["/check-strength" {:post {:handler check-strength
-                              :middleware [af/wrap-anti-forgery]}}]])
+                              :middleware [af/wrap-anti-forgery {:strategy (double-submit-cookie-strategy)
+                                                                 :read-token read-tok}]}}]])
 
 
 (defn wrap-formats [handler]
