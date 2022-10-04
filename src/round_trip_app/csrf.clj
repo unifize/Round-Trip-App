@@ -1,8 +1,8 @@
 (ns round-trip-app.csrf
-  (:require [round-trip-app.strategy :refer [Strategy]]
-            [crypto.random :as random]
+  (:require [crypto.random :as random]
             [crypto.equality :as crypto]
             [ring.middleware.cookies :refer [cookies-request cookies-response]]
+            [ring.middleware.anti-forgery.strategy :as strategy]
             [clojure.string :as str]
             [pandect.algo.sha256 :refer [sha256-hmac]]))
 
@@ -42,7 +42,7 @@
 
 
 (deftype DoubleSubmitCookieStrategy [] 
-  Strategy 
+  strategy/Strategy 
   (get-token [this request]
     (println "request: " request)
     (or (csrf-token request) 
