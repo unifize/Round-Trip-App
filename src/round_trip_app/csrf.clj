@@ -7,16 +7,12 @@
             [pandect.algo.sha256 :refer [sha256-hmac]]))
 
 
-(defn read-tok [request]
-  (get-in request [:form-params "csrf-token"]))
-
-
 (defn- csrf-token [request]
-  (let [cookied-request [cookies-request request]]
+  (let [cookied-request (cookies-request request)]
     (get-in cookied-request [:cookies "x-csrf-token" :value])))
 
 
-(defn generate-csrf-token []
+(defn- generate-csrf-token []
   (let [base64-str (random/base64 60)
           enc-base64-str (sha256-hmac base64-str "unifize-secret-key")]
       (str base64-str "." enc-base64-str)))
@@ -41,11 +37,10 @@
          (= cookie-header-csrf-tail (sha256-hmac hidden-html-csrf-head "unifize-secret-key")))))
 
 
-(deftype DoubleSubmitCookieStrategy [] 
-  strategy/Strategy 
+(deftype DoubleSubmitCookieStrategy []
+  strategy/Strategy
   (get-token [this request]
-    (println "request: " request)
-    (or (csrf-token request) 
+    (or (csrf-token request)
         (generate-csrf-token)))
 
   (valid-token? [_ request token]
@@ -53,13 +48,13 @@
       (and token
            cookie-token
            (valid-tokens? cookie-token token))))
-  
+
   (write-token [this request response token]
-               (let [curr-token (csrf-token request)]
-                 (if (= curr-token token)
-                   response
-                   (cookies-response (-> response
-                                         (update-in [:cookies] assoc :x-csrf-token token)))))))
+    (let [curr-token (csrf-token request)]
+      (if (= curr-token token)
+        response
+        (cookies-response (-> response
+                              (update-in [:cookies] assoc :x-csrf-token token)))))))
 
 
 (defn double-submit-cookie-strategy []

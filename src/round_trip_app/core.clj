@@ -7,26 +7,23 @@
            [com.google.auth.oauth2 ComputeEngineCredentials])
   (:require [hiccup.core :refer :all]
             [hiccup.page :refer :all]
+            [round-trip-app.csrf :refer [double-submit-cookie-strategy]]
             [ring.adapter.jetty :as jetty]
             [reitit.ring :as reitit]
             [muuntaja.middleware :as muuntaja]
             [ring.util.http-response :as response]
             [ring.util.response :refer [redirect]]
-            [taoensso.timbre :as timbre]
             [ring.middleware.reload :refer [wrap-reload]]
             [ring.middleware.params :refer [wrap-params]]
-            [ring.middleware.cookies :refer [cookies-response cookies-request]]
+            [ring.middleware.cookies :refer [wrap-cookies]]
             [ring.middleware.anti-forgery :as af]
-            [round-trip-app.csrf :refer [double-submit-cookie-strategy read-tok generate-csrf-token]]
             [ring.util.anti-forgery :as afu]
             [cheshire.core :as json]
             [clojure.java.io :as io :refer [input-stream]]
-            [hickory.zip :as hickory]
-            [hickory.core :as hickoryc]
-            [clojure.zip :as zip]
             [clojure.string :as str]
             [clj-http.client :as http])
   (:gen-class))
+
 
 (defn get-google-credentials
   ([service-account]
@@ -78,14 +75,15 @@
 
 (defn firebase-sign-in [email password]
   (try
-    (let [response (-> (http/post "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-                                  {:query-params {:key "<API_KEY>"}
-                                   :form-params {:email email
-                                                 :password password
-                                                 :returnSecureToken true}})
-                       :body
-                       json/parse-string)]
-          (response "idToken"))
+    (-> (http/post
+         "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+         {:query-params {:key "<API_KEY>"}
+          :form-params {:email email
+                        :password password
+                        :returnSecureToken true}})
+        :body
+        json/parse-string
+        (get "idToken"))
   (catch Exception _
     nil)))
 
@@ -110,80 +108,39 @@
            [:h1 "Home"]
            [:p "Welcome to the home page."]
            [:form {:action "/check-strength" :method "post"} 
-            [:input {:type "hidden" :name "csrf-token" :value (generate-csrf-token)}]
+            (afu/anti-forgery-field)
             [:input {:type "text" :name "password"}]
             [:input {:type "submit" :value "Check Password Strength"}]]
            [:a {:href "/logout"} "Logout"]])))
 
 
-(defn html->hiccup [html]
-  (hickoryc/as-hiccup (hickoryc/parse html)))
+(defn strength-checker [request]
+  (let [password (get-in request [:form-params "password"])]
+    (response/ok
+     (html5 [:head [:title "Strength Checker"]]
+            [:body
+             [:h1 "Strength Checker"]
+             [:p "Strength of the password is " (count password)]
+             [:a {:href "/home"} "Home"]]))))
 
 
-(defn hiccup->zip [hiccup]
-  (hickory/hiccup-zip hiccup))
-
-
-(defn is-csrf-input-tag? [tag]
-  (and (= (first tag) :input)
-       (= (:type (second tag)) "hidden")
-       (= (:name (second tag)) "csrf-token")))
-
-
-(defn add-csrf-token [zipped-html csrf-token]
-  (loop [zip zipped-html]
-    (if (zip/end? zip)
-      zip
-      (if (is-csrf-input-tag? (zip/node zip))
-        (recur (zip/next
-                (zip/replace zip [:input
-                                  {:type "hidden"
-                                   :name "csrf-token"
-                                   :value csrf-token}])))
-        (recur (zip/next zip))))))
-
-
-(defn add-csrf-token-to-html [html-code csrf-token]
-  (let [zipped-hiccup (-> html-code
-                          html->hiccup
-                          hiccup->zip)
-        hiccup-with-csrf (add-csrf-token zipped-hiccup csrf-token)]
-    (html (zip/node hiccup-with-csrf))))
-
-
-(defn csrf-token-adder [handler]
+(defn session-cookie-check [handler]
   (fn [request]
-    (let [response (handler request)]
-      (if (= (:status response) 200)
-        (let [csrf-token "xyz"
-              html (add-csrf-token-to-html (:body response) csrf-token)]
-          (assoc response :body html))
-        response))))
-
-
-(defn anti-forgery [handler]
-  (fn [request]
-    (let [cookied-request (cookies-request request)
-          session-cookie (get-in cookied-request [:cookies "session-cookie" :value])
-          csrf-token (get-in request [:form-params "csrf-token"])]
-      (if (or (nil? session-cookie)
-              (not= csrf-token "xyz") ;; replace by making the database call to get and verify the csrf token
-              (not (verify-cookie session-cookie)))
+    (let [session-cookie (get-in request [:cookies "session-cookie" :value])]
+      (if (not (verify-cookie session-cookie))
         (redirect "/")
         (handler request)))))
 
 
-(defn check-strength [request]
-  (let [password (get-in request [:form-params "password"])]
-    (response/ok (json/generate-string {:strength (count password)}))))
-
-
 (defn add-cookie-header [response id-token]
-  (-> (assoc response :cookies {:session-cookie (create-session-cookie id-token "days" 5)})
-      cookies-response))
+  (-> response
+      (assoc :cookies {:session-cookie (create-session-cookie
+                                        id-token
+                                        "days"
+                                        5)})))
 
 
-(defn login-handler [request]
+(defn login [request]
   (let [params (:form-params request)
         email (params "email")
         password (params "password")]
@@ -192,15 +149,26 @@
       (redirect "/"))))
 
 
+(defn logout [_]
+  (-> (redirect "/")
+      (assoc :cookies {:session-cookie {:value ""
+                                        :max-age 0}
+                       :x-csrf-token {:value ""
+                                      :max-age 0}})))
+
+
 (def routes
   [["/" {:get login-page}]
-   ["/login" {:post login-handler}]
-   ["/home" {:get {:handler home-page
-                   :middleware [af/wrap-anti-forgery {:strategy (double-submit-cookie-strategy)
-                                                      :read-token read-tok}]}}]
-   ["/check-strength" {:post {:handler check-strength
-                              :middleware [af/wrap-anti-forgery {:strategy (double-submit-cookie-strategy)
-                                                                 :read-token read-tok}]}}]])
+   ["/login" {:post login}]
+   ["/home" {:get (session-cookie-check
+                   (af/wrap-anti-forgery
+                    home-page
+                    {:strategy (double-submit-cookie-strategy)}))}]
+   ["/check-strength" {:post (session-cookie-check
+                              (af/wrap-anti-forgery
+                               strength-checker
+                               {:strategy (double-submit-cookie-strategy)}))}]
+   ["/logout" {:get (session-cookie-check logout)}]])
 
 
 (defn wrap-formats [handler]
@@ -224,6 +192,7 @@
   (jetty/run-jetty (-> #'handler
                        wrap-formats
                        wrap-params
+                       wrap-cookies
                        wrap-reload)
                    {:port 3000
                     :join? true}))
